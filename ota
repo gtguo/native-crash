@@ -1,0 +1,65 @@
+一.做包
+命令make -j8 otapackage
+在build/make/core/Makefile文件里会调用ota_from_target_files.py这个脚本去做包，
+在运行完成后会生成对应的dtx400_ota_000.zip，在这个压缩包里有一个文件叫updater-script，
+这个文件会被update-binary这个bin解析并执行对应的升级动作。
+
+二.进recovery升级模式
+
+命令adb reboot recovery 选sdcard升级或从UI菜单进入。
+在recovery.cpp文件里面调用install_package函数进入安装流程，如下图：
+
+
+OTA自定义升级包制作，支持adb sideload /sdcard卡升级
+1.做包，命令make -j8 otapackage 或 make -j8 otapackage USERDATA_WIPE=1（添加这个参数升级时会擦除userdata，改动见patch：
+$(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) \
+		build/tools/releasetools/ota_from_target_files
+	@echo "Package OTA: $@"
+	$(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH MKBOOTIMG=$(MKBOOTIMG) \
+	   ./build/tools/releasetools/ota_from_target_files -v \
+	   $(if $(USERDATA_WIPE), -w) \
+	   --block \
+	   --extracted_input_target_files $(patsubst %.zip,%,$(BUILT_TARGET_FILES_PACKAGE)) \
+	   -p $(HOST_OUT) \
+	   -k $(KEY_CERT_PAIR) \
+	   $(if $(OEM_OTA_CONFIG), -o $(OEM_OTA_CONFIG)) \
+	   $(BUILT_TARGET_FILES_PACKAGE) $@
+2.添加自定义升级分区
+分区分两种：
+A.有文件系统的分区，如oempersist, 改动见patch：http://sh.gerrit.t2mobile.com:8081/#/c/22158/
+B.bin分区，如sec.dat，在/device/t2m/dtx400/radio/filesmap文件中添加
+sec.dat             /dev/block/bootdevice/by-name/sec
+cmnlib.mbn              /dev/block/bootdevice/by-name/cmnlibkey
+master64.mbn            /dev/block/bootdevice/by-name/keymaster
+study.img               /dev/block/bootdevice/by-name/fsg
+splash.img              /dev/block/bootdevice/by-name/splash
+B.device/t2m/dtx400 / AndroidBoard.mk
+INSTALLED_RADIOIMAGE_TARGET += $(PRODUCT_OUT)/emmc_appsboot.mbn $(PRODUCT_OUT)/study.img
+$(call add-radio-file,../common/amss/NON-HLOS_LTE.bin)
+$(call add-radio-file,../common/amss/NON-HLOS_WIFI.bin)
+$(call add-radio-file,../common/amss/rpm.mbn)
+$(call add-radio-file,../common/amss/tz.mbn)
+$(call add-radio-file,../common/amss/sbl1.mbn)
+# $(call add-radio-file,../common/amss/hyp.mbn)
+$(call add-radio-file,../common/amss/sec.dat)
+$(call add-radio-file,../common/amss/cmnlib.mbn)
+$(call add-radio-file,../common/amss/keymaster64.mbn)
+$(call add-radio-file,splash/splash.img)
+3. recovery.cpp 修改，原生的不支持sideload/sdcard升级，修改如下：
+       case Device::APPLY_ADB_SIDELOAD:
+      case Device::APPLY_SDCARD:
+        {
+/*add by gtguo for taskID 6317107*/
+/*before install OTA, the /cache/recovery/ must be mounted and mkdir*/
+    	LOG(INFO) << "!!!prompt_and_wait!!! "; 
+    	if (ensure_path_mounted(CACHE_LOG_DIR) == 0 &&
+        	dirCreateHierarchy(CACHE_LOG_DIR, 0777, nullptr, false, sehandle) == 0) {
+	   		PLOG(INFO) << " mount / create " << CACHE_LOG_DIR;
+    	} else {
+      		PLOG(ERROR) << "Failed to mount / create " << CACHE_LOG_DIR;
+    	}
+/*end*/   
+4. 验证方法：adb reboot recovery进入recovery模式，选择adb升级模式，执行adb sideload update.zip，查看是否升级成功。升级log在手机/cache/recovery分区下查看
+     
+ 
+     
